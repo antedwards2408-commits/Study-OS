@@ -1,4 +1,4 @@
-import { getAnthropicClient, AI_MODEL, extractJson, textFromResponse } from "./anthropic";
+import { complete, extractJson, type ChatMessage } from "./groq";
 import type { Difficulty } from "@/types/database";
 
 export interface InferredTopic {
@@ -30,17 +30,16 @@ export async function inferTopics(params: {
   materialTitle: string;
   text: string;
 }): Promise<InferredTopic[]> {
-  const client = getAnthropicClient();
-  const response = await client.messages.create({
-    model: AI_MODEL,
-    max_tokens: 2000,
-    output_config: { effort: "low" },
-    system:
-      "You are an academic curriculum analyst. Given a student's course material, " +
-      "identify the distinct topics/subtopics it covers so progress can be tracked per topic. " +
-      "Use concise, student-recognizable topic names (e.g. 'Meiosis', 'Cell Communication'), " +
-      `3-8 topics depending on material length. ${JSON_ONLY_RULE}`,
-    messages: [
+  const text = await complete(
+    [
+      {
+        role: "system",
+        content:
+          "You are an academic curriculum analyst. Given a student's course material, " +
+          "identify the distinct topics/subtopics it covers so progress can be tracked per topic. " +
+          "Use concise, student-recognizable topic names (e.g. 'Meiosis', 'Cell Communication'), " +
+          `3-8 topics depending on material length. ${JSON_ONLY_RULE}`,
+      },
       {
         role: "user",
         content:
@@ -49,9 +48,10 @@ export async function inferTopics(params: {
           `Return a JSON array of objects: [{"name": string, "description": string}]`,
       },
     ],
-  });
+    { maxTokens: 2000 },
+  );
 
-  return extractJson<InferredTopic[]>(textFromResponse(response));
+  return extractJson<InferredTopic[]>(text);
 }
 
 /** Generates flashcards grounded in the provided material chunks. */
@@ -61,16 +61,16 @@ export async function generateFlashcards(params: {
   topics: string[];
   count: number;
 }): Promise<GeneratedFlashcard[]> {
-  const client = getAnthropicClient();
-  const response = await client.messages.create({
-    model: AI_MODEL,
-    max_tokens: 4000,
-    system:
-      "You are a study tool that converts a student's own course material into flashcards. " +
-      "Every flashcard must be answerable strictly from the given material - never invent facts. " +
-      "Vary difficulty (easy/medium/hard) based on how conceptually demanding the question is. " +
-      `Tag each card with the closest matching topic name from the provided list, or null if none fit. ${JSON_ONLY_RULE}`,
-    messages: [
+  const text = await complete(
+    [
+      {
+        role: "system",
+        content:
+          "You are a study tool that converts a student's own course material into flashcards. " +
+          "Every flashcard must be answerable strictly from the given material - never invent facts. " +
+          "Vary difficulty (easy/medium/hard) based on how conceptually demanding the question is. " +
+          `Tag each card with the closest matching topic name from the provided list, or null if none fit. ${JSON_ONLY_RULE}`,
+      },
       {
         role: "user",
         content:
@@ -81,9 +81,10 @@ export async function generateFlashcards(params: {
           `[{"question": string, "answer": string, "difficulty": "easy"|"medium"|"hard", "topicName": string|null}]`,
       },
     ],
-  });
+    { maxTokens: 4000 },
+  );
 
-  return extractJson<GeneratedFlashcard[]>(textFromResponse(response));
+  return extractJson<GeneratedFlashcard[]>(text);
 }
 
 /** Generates a multiple-choice quiz grounded in the provided material chunks. */
@@ -93,17 +94,17 @@ export async function generateQuiz(params: {
   topics: string[];
   count: number;
 }): Promise<GeneratedQuizQuestion[]> {
-  const client = getAnthropicClient();
-  const response = await client.messages.create({
-    model: AI_MODEL,
-    max_tokens: 4000,
-    system:
-      "You are a study tool that writes multiple-choice quizzes strictly grounded in a student's " +
-      "own course material - never invent facts not supported by the content. Each question has " +
-      "exactly 4 choices with exactly one correct answer, plus a short explanation of why the " +
-      `correct choice is right. Tag each question with the closest matching topic name from the ` +
-      `provided list, or null if none fit. ${JSON_ONLY_RULE}`,
-    messages: [
+  const text = await complete(
+    [
+      {
+        role: "system",
+        content:
+          "You are a study tool that writes multiple-choice quizzes strictly grounded in a student's " +
+          "own course material - never invent facts not supported by the content. Each question has " +
+          "exactly 4 choices with exactly one correct answer, plus a short explanation of why the " +
+          `correct choice is right. Tag each question with the closest matching topic name from the ` +
+          `provided list, or null if none fit. ${JSON_ONLY_RULE}`,
+      },
       {
         role: "user",
         content:
@@ -115,9 +116,10 @@ export async function generateQuiz(params: {
           `"explanation": string, "topicName": string|null}]`,
       },
     ],
-  });
+    { maxTokens: 4000 },
+  );
 
-  return extractJson<GeneratedQuizQuestion[]>(textFromResponse(response));
+  return extractJson<GeneratedQuizQuestion[]>(text);
 }
 
 /** Generates practice questions targeted at a single weak topic. */
@@ -126,15 +128,15 @@ export async function generatePracticeQuestions(params: {
   chunks: string[];
   count: number;
 }): Promise<GeneratedQuizQuestion[]> {
-  const client = getAnthropicClient();
-  const response = await client.messages.create({
-    model: AI_MODEL,
-    max_tokens: 3000,
-    system:
-      `You are a study tool generating targeted practice questions on one specific weak topic: ` +
-      `"${params.topicName}". Ground every question strictly in the provided material. Each question ` +
-      `has exactly 4 choices with exactly one correct answer and a short explanation. ${JSON_ONLY_RULE}`,
-    messages: [
+  const text = await complete(
+    [
+      {
+        role: "system",
+        content:
+          `You are a study tool generating targeted practice questions on one specific weak topic: ` +
+          `"${params.topicName}". Ground every question strictly in the provided material. Each question ` +
+          `has exactly 4 choices with exactly one correct answer and a short explanation. ${JSON_ONLY_RULE}`,
+      },
       {
         role: "user",
         content:
@@ -143,11 +145,10 @@ export async function generatePracticeQuestions(params: {
           `[{"question": string, "choices": [string,string,string,string], "correctIndex": number 0-3, "explanation": string}]`,
       },
     ],
-  });
-
-  const questions = extractJson<Omit<GeneratedQuizQuestion, "topicName">[]>(
-    textFromResponse(response),
+    { maxTokens: 3000 },
   );
+
+  const questions = extractJson<Omit<GeneratedQuizQuestion, "topicName">[]>(text);
   return questions.map((q) => ({ ...q, topicName: params.topicName }));
 }
 
@@ -164,7 +165,6 @@ export async function askTutor(params: {
   history: TutorMessage[];
   question: string;
 }): Promise<string> {
-  const client = getAnthropicClient();
   const hasContext = params.retrievedChunks.length > 0;
 
   const system =
@@ -182,15 +182,11 @@ export async function askTutor(params: {
       ? `EXCERPTS FROM STUDENT'S MATERIAL:\n${params.retrievedChunks.join("\n---\n").slice(0, 12000)}`
       : "No matching excerpts were found in the student's uploaded material for this question.");
 
-  const response = await client.messages.create({
-    model: AI_MODEL,
-    max_tokens: 1500,
-    system,
-    messages: [
-      ...params.history.map((m) => ({ role: m.role, content: m.content }) as const),
-      { role: "user", content: params.question },
-    ],
-  });
+  const messages: ChatMessage[] = [
+    { role: "system", content: system },
+    ...params.history.map((m) => ({ role: m.role, content: m.content }) as ChatMessage),
+    { role: "user", content: params.question },
+  ];
 
-  return textFromResponse(response);
+  return complete(messages, { maxTokens: 1500 });
 }

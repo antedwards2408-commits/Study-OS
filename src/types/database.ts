@@ -22,6 +22,7 @@ export interface Database {
           email: string;
         };
         Update: Partial<Database["public"]["Tables"]["profiles"]["Row"]>;
+          Relationships: [];
       };
       courses: {
         Row: {
@@ -38,6 +39,7 @@ export interface Database {
           name: string;
         };
         Update: Partial<Database["public"]["Tables"]["courses"]["Row"]>;
+          Relationships: [];
       };
       topics: {
         Row: {
@@ -54,6 +56,7 @@ export interface Database {
           name: string;
         };
         Update: Partial<Database["public"]["Tables"]["topics"]["Row"]>;
+          Relationships: [];
       };
       materials: {
         Row: {
@@ -76,6 +79,7 @@ export interface Database {
           type: MaterialType;
         };
         Update: Partial<Database["public"]["Tables"]["materials"]["Row"]>;
+          Relationships: [];
       };
       material_chunks: {
         Row: {
@@ -96,6 +100,7 @@ export interface Database {
           content: string;
         };
         Update: Partial<Database["public"]["Tables"]["material_chunks"]["Row"]>;
+          Relationships: [];
       };
       chat_messages: {
         Row: {
@@ -114,6 +119,7 @@ export interface Database {
           content: string;
         };
         Update: Partial<Database["public"]["Tables"]["chat_messages"]["Row"]>;
+          Relationships: [];
       };
       flashcards: {
         Row: {
@@ -135,6 +141,7 @@ export interface Database {
           answer: string;
         };
         Update: Partial<Database["public"]["Tables"]["flashcards"]["Row"]>;
+          Relationships: [];
       };
       flashcard_reviews: {
         Row: {
@@ -150,6 +157,7 @@ export interface Database {
           known: boolean;
         };
         Update: Partial<Database["public"]["Tables"]["flashcard_reviews"]["Row"]>;
+          Relationships: [];
       };
       quizzes: {
         Row: {
@@ -166,6 +174,7 @@ export interface Database {
           title: string;
         };
         Update: Partial<Database["public"]["Tables"]["quizzes"]["Row"]>;
+          Relationships: [];
       };
       quiz_questions: {
         Row: {
@@ -185,6 +194,7 @@ export interface Database {
           correct_index: number;
         };
         Update: Partial<Database["public"]["Tables"]["quiz_questions"]["Row"]>;
+          Relationships: [];
       };
       quiz_attempts: {
         Row: {
@@ -203,6 +213,7 @@ export interface Database {
           user_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["quiz_attempts"]["Row"]>;
+          Relationships: [];
       };
       quiz_answers: {
         Row: {
@@ -222,6 +233,7 @@ export interface Database {
           is_correct: boolean;
         };
         Update: Partial<Database["public"]["Tables"]["quiz_answers"]["Row"]>;
+          Relationships: [];
       };
       practice_sessions: {
         Row: {
@@ -240,6 +252,7 @@ export interface Database {
           user_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["practice_sessions"]["Row"]>;
+          Relationships: [];
       };
       practice_questions: {
         Row: {
@@ -260,6 +273,7 @@ export interface Database {
           correct_index: number;
         };
         Update: Partial<Database["public"]["Tables"]["practice_questions"]["Row"]>;
+          Relationships: [];
       };
       topic_mastery: {
         Row: {
@@ -278,6 +292,35 @@ export interface Database {
           topic_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["topic_mastery"]["Row"]>;
+          Relationships: [];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: {
+      search_material_chunks: {
+        Args: { p_material_id: string; p_query: string; p_limit?: number };
+        Returns: {
+          id: string;
+          chunk_index: number;
+          content: string;
+          topic_id: string | null;
+          rank: number;
+        }[];
+      };
+      search_course_chunks: {
+        Args: { p_course_id: string; p_query: string; p_limit?: number };
+        Returns: {
+          id: string;
+          material_id: string;
+          chunk_index: number;
+          content: string;
+          topic_id: string | null;
+          rank: number;
+        }[];
+      };
+      chunks_for_topic: {
+        Args: { p_topic_id: string; p_limit?: number };
+        Returns: { id: string; material_id: string; content: string }[];
       };
     };
   };
