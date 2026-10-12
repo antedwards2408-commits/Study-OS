@@ -7,6 +7,12 @@ import type { MaterialType } from "@/types/database";
 
 // Route Handlers are not cached by default, and POST is never cached - this
 // always runs the full upload + extraction pipeline at request time.
+// PDF extraction + AI topic inference + storage/DB writes can comfortably
+// exceed the platform's default function timeout (10s on Vercel Hobby),
+// which kills the function mid-response and surfaces as an empty body
+// ("Unexpected end of JSON input") on the client - extend it explicitly.
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   const supabase = await createClient();
 
