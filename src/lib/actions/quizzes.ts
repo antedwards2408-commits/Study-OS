@@ -121,6 +121,7 @@ export async function generateQuizAction(
 
     quizId = quiz.id as string;
   } catch (err) {
+    console.error("[quizzes] generation failed", err);
     return { error: err instanceof Error ? err.message : "Failed to generate quiz." };
   }
 

@@ -2,6 +2,8 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { generatePracticeQuestions } from "@/lib/ai/generate";
+import { AIError } from "@/lib/ai/groq";
+import { getTopicChunks } from "@/lib/ai/topic-chunks";
 import { recomputeTopicMastery } from "@/lib/mastery";
 
 const QUESTIONS_PER_SESSION = 6;
@@ -43,33 +45,35 @@ export async function startPracticeSession(
 
   const { data: topic } = await supabase
     .from("topics")
-    .select("id, name")
+    .select("id, name, description")
     .eq("id", topicId)
     .eq("course_id", courseId)
     .single();
 
   if (!topic) return { ok: false, error: "not-found" };
 
-  const { data: chunkRows, error: chunksError } = await supabase.rpc(
-    "chunks_for_topic",
-    { p_topic_id: topicId, p_limit: CHUNKS_PER_SESSION },
-  );
-
-  if (chunksError) return { ok: false, error: "generation-failed", message: chunksError.message };
-  if (!chunkRows || chunkRows.length === 0) return { ok: false, error: "no-chunks" };
+  const chunks = await getTopicChunks(supabase, {
+    courseId,
+    topicId,
+    topicName: topic.name,
+    topicDescription: topic.description,
+    limit: CHUNKS_PER_SESSION,
+  });
+  if (chunks.length === 0) return { ok: false, error: "no-chunks" };
 
   let generated;
   try {
     generated = await generatePracticeQuestions({
       topicName: topic.name,
-      chunks: chunkRows.map((c) => c.content),
+      chunks,
       count: QUESTIONS_PER_SESSION,
     });
   } catch (err) {
+    console.error("[practice] generation failed", err);
     return {
       ok: false,
       error: "generation-failed",
-      message: err instanceof Error ? err.message : "Failed to generate practice questions.",
+      message: err instanceof AIError ? err.message : "Failed to generate practice questions - please try again.",
     };
   }
 

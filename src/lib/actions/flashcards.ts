@@ -101,6 +101,7 @@ export async function generateFlashcardsAction(
       return { error: insertError.message };
     }
   } catch (err) {
+    console.error("[flashcards] generation failed", err);
     return { error: err instanceof Error ? err.message : "Failed to generate flashcards." };
   }
 

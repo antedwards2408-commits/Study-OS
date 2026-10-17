@@ -6,8 +6,21 @@ import { FileText, Loader2, NotebookPen, Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
+import { createClient } from "@/lib/supabase/client";
 
 type Mode = "pdf" | "text";
+
+const MAX_PDF_BYTES = 25 * 1_048_576;
+
+/** Parses a JSON body without throwing on an empty or HTML error page from the platform. */
+async function readJson(res: Response): Promise<{ error?: string }> {
+  const raw = await res.text();
+  try {
+    return raw ? (JSON.parse(raw) as { error?: string }) : {};
+  } catch {
+    return { error: res.ok ? undefined : `Server error (HTTP ${res.status}). Please try again.` };
+  }
+}
 
 /**
  * Client-side upload form for the materials list. Posts FormData to the
@@ -43,22 +56,48 @@ export function UploadForm({ courseId }: { courseId: string }) {
       return;
     }
 
-    const formData = new FormData();
-    formData.set("course_id", courseId);
-    formData.set("title", title.trim());
-    formData.set("type", mode);
-    if (mode === "pdf" && file) {
-      formData.set("file", file);
-    } else {
-      formData.set("text", text);
+    if (mode === "pdf" && file && file.size > MAX_PDF_BYTES) {
+      setError(`That PDF is ${(file.size / 1_048_576).toFixed(1)} MB - the limit is 25 MB.`);
+      return;
     }
 
     setBusy(true);
     try {
-      const res = await fetch("/api/materials/upload", { method: "POST", body: formData });
-      const data = (await res.json()) as { error?: string };
+      let storagePath: string | undefined;
+
+      if (mode === "pdf" && file) {
+        // Upload straight to Storage from the browser so large PDFs never
+        // pass through the serverless function's request-size limit.
+        const supabase = createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) throw new Error("You're signed out - sign in again and retry.");
+
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-120) || "material.pdf";
+        storagePath = `${user.id}/${crypto.randomUUID()}/${safeName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("materials")
+          .upload(storagePath, file, { contentType: "application/pdf" });
+        if (uploadError) throw new Error(`File upload failed: ${uploadError.message}`);
+      }
+
+      const res = await fetch("/api/materials/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          course_id: courseId,
+          title: title.trim(),
+          type: mode,
+          storage_path: storagePath,
+          text: mode === "text" ? text : undefined,
+        }),
+      });
+
+      const data = await readJson(res);
       if (!res.ok) {
-        throw new Error(data.error ?? "Upload failed");
+        throw new Error(data.error ?? `Upload failed (HTTP ${res.status})`);
       }
 
       setTitle("");

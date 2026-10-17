@@ -1,72 +1,99 @@
 import { NextResponse } from "next/server";
-import { PDFParse } from "pdf-parse";
+import { extractText, getDocumentProxy } from "unpdf";
 import { createClient } from "@/lib/supabase/server";
 import { chunkText } from "@/lib/ai/chunk";
 import { inferTopics } from "@/lib/ai/generate";
-import type { MaterialType } from "@/types/database";
 
-// Route Handlers are not cached by default, and POST is never cached - this
-// always runs the full upload + extraction pipeline at request time.
-// PDF extraction + AI topic inference + storage/DB writes can comfortably
-// exceed the platform's default function timeout (10s on Vercel Hobby),
-// which kills the function mid-response and surfaces as an empty body
-// ("Unexpected end of JSON input") on the client - extend it explicitly.
+// PDF extraction + AI topic inference + DB writes can exceed the default
+// serverless timeout (10s on Vercel Hobby), which kills the function
+// mid-response and surfaces as an empty body on the client.
 export const maxDuration = 60;
 
+interface UploadBody {
+  course_id?: unknown;
+  title?: unknown;
+  type?: unknown;
+  storage_path?: unknown;
+  text?: unknown;
+}
+
+function fail(error: string, status: number) {
+  return NextResponse.json({ error }, { status });
+}
+
+interface TopicRef {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+const STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "into", "are", "its",
+  "their", "how", "what", "why", "of", "in", "on", "to", "a", "an", "is", "by",
+]);
+
+function keywords(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? []).filter((w) => !STOPWORDS.has(w));
+}
+
+/** Tags a chunk with the topic whose name/description terms it mentions most (name terms weigh more). */
+function bestTopicFor(chunk: string, topics: TopicRef[]): string | null {
+  if (topics.length === 0) return null;
+  const haystack = chunk.toLowerCase();
+  let best: { id: string; score: number } | null = null;
+
+  for (const topic of topics) {
+    let score = 0;
+    for (const word of new Set(keywords(topic.name))) if (haystack.includes(word)) score += 3;
+    for (const word of new Set(keywords(topic.description ?? ""))) if (haystack.includes(word)) score += 1;
+    if (score > 0 && (!best || score > best.score)) best = { id: topic.id, score };
+  }
+  return best?.id ?? null;
+}
+
+/**
+ * Processes a material. PDFs are uploaded by the browser straight to the
+ * `materials` Storage bucket (bypassing the platform's ~4.5 MB request body
+ * cap), so this route only receives the storage path, then downloads,
+ * extracts, chunks, and indexes it. Pasted notes arrive inline as `text`.
+ */
 export async function POST(request: Request) {
   const supabase = await createClient();
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  if (!user) return fail("You're signed out - sign in again and retry.", 401);
 
-  let formData: FormData;
+  let body: UploadBody;
   try {
-    formData = await request.formData();
+    body = (await request.json()) as UploadBody;
   } catch {
-    return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
+    return fail("Invalid request body.", 400);
   }
 
-  const courseId = formData.get("course_id");
-  const titleRaw = formData.get("title");
-  const type = formData.get("type");
-  const file = formData.get("file");
-  const text = formData.get("text");
+  const { course_id: courseId, title: titleRaw, type, storage_path: storagePath, text } = body;
 
-  if (typeof courseId !== "string" || !courseId) {
-    return NextResponse.json({ error: "course_id is required" }, { status: 400 });
-  }
-  if (typeof titleRaw !== "string" || !titleRaw.trim()) {
-    return NextResponse.json({ error: "title is required" }, { status: 400 });
-  }
-  if (type !== "pdf" && type !== "text") {
-    return NextResponse.json({ error: "type must be 'pdf' or 'text'" }, { status: 400 });
-  }
-  if (type === "pdf" && !(file instanceof File)) {
-    return NextResponse.json({ error: "A PDF file is required" }, { status: 400 });
+  if (typeof courseId !== "string" || !courseId) return fail("course_id is required", 400);
+  if (typeof titleRaw !== "string" || !titleRaw.trim()) return fail("Title is required", 400);
+  if (type !== "pdf" && type !== "text") return fail("type must be 'pdf' or 'text'", 400);
+  if (type === "pdf") {
+    if (typeof storagePath !== "string" || !storagePath) return fail("A PDF file is required", 400);
+    // RLS on storage already scopes reads to the user's own folder; checking
+    // here too gives a clear 403 instead of an opaque download failure.
+    if (!storagePath.startsWith(`${user.id}/`)) return fail("Invalid file path", 403);
   }
   if (type === "text" && (typeof text !== "string" || !text.trim())) {
-    return NextResponse.json({ error: "Pasted notes cannot be empty" }, { status: 400 });
+    return fail("Pasted notes cannot be empty", 400);
   }
 
   const title = titleRaw.trim();
-  const materialType: MaterialType = type;
 
-  // Confirm the course exists and belongs to this user (RLS would also
-  // enforce this, but failing fast here gives a clean 404 instead of a
-  // confusing downstream insert error).
-  const { data: course, error: courseError } = await supabase
+  const { data: course } = await supabase
     .from("courses")
     .select("id, name")
     .eq("id", courseId)
     .single();
-
-  if (courseError || !course) {
-    return NextResponse.json({ error: "Course not found" }, { status: 404 });
-  }
+  if (!course) return fail("Course not found", 404);
 
   const { data: material, error: insertError } = await supabase
     .from("materials")
@@ -74,51 +101,36 @@ export async function POST(request: Request) {
       course_id: courseId,
       user_id: user.id,
       title,
-      type: materialType,
-      status: "pending",
+      type,
+      status: "processing",
+      storage_path: type === "pdf" ? (storagePath as string) : null,
     })
     .select()
     .single();
 
   if (insertError || !material) {
-    return NextResponse.json(
-      { error: insertError?.message ?? "Failed to create material" },
-      { status: 500 },
-    );
+    console.error("[upload] material insert failed", insertError);
+    return fail(insertError?.message ?? "Failed to create material", 500);
   }
 
   try {
-    await supabase.from("materials").update({ status: "processing" }).eq("id", material.id);
-
     let extractedText: string;
-    let storagePath: string | null = null;
 
-    if (materialType === "pdf") {
-      const pdfFile = file as File;
-      const buffer = Buffer.from(await pdfFile.arrayBuffer());
-
-      storagePath = `${user.id}/${material.id}/${pdfFile.name}`;
-      const { error: uploadError } = await supabase.storage
+    if (type === "pdf") {
+      const { data: blob, error: downloadError } = await supabase.storage
         .from("materials")
-        .upload(storagePath, buffer, {
-          contentType: pdfFile.type || "application/pdf",
-          upsert: true,
-        });
-      if (uploadError) {
-        throw new Error(`Failed to store the PDF: ${uploadError.message}`);
+        .download(storagePath as string);
+      if (downloadError || !blob) {
+        throw new Error(`Couldn't read the uploaded PDF: ${downloadError?.message ?? "not found"}`);
       }
 
-      const parser = new PDFParse({ data: buffer });
-      try {
-        const result = await parser.getText();
-        extractedText = result.text.trim();
-      } finally {
-        await parser.destroy();
-      }
+      const pdf = await getDocumentProxy(new Uint8Array(await blob.arrayBuffer()));
+      const result = await extractText(pdf, { mergePages: true });
+      extractedText = result.text.trim();
 
       if (!extractedText) {
         throw new Error(
-          "No extractable text was found in this PDF (it may be a scanned image without OCR).",
+          "No selectable text found in this PDF - it's probably a scanned image. Try a text-based PDF or paste the notes instead.",
         );
       }
     } else {
@@ -126,13 +138,11 @@ export async function POST(request: Request) {
     }
 
     const chunks = chunkText(extractedText);
-    if (chunks.length === 0) {
-      throw new Error("No content left to process after chunking.");
-    }
+    if (chunks.length === 0) throw new Error("No content left to process after chunking.");
 
-    // Best-effort topic inference: a failure here shouldn't sink the whole
-    // upload, since chunks are still searchable without topic tags.
-    const topicIdByName = new Map<string, string>();
+    // Topic inference is best-effort: chunks stay searchable without topics,
+    // so an AI hiccup shouldn't fail the whole upload.
+    const topics: TopicRef[] = [];
     try {
       const inferred = await inferTopics({
         courseName: course.name,
@@ -141,15 +151,15 @@ export async function POST(request: Request) {
       });
 
       for (const topic of inferred) {
+        if (!topic?.name) continue;
         const { data: existing } = await supabase
           .from("topics")
-          .select("id")
+          .select("id, name, description")
           .eq("course_id", courseId)
           .eq("name", topic.name)
           .maybeSingle();
-
         if (existing) {
-          topicIdByName.set(topic.name, existing.id);
+          topics.push(existing);
           continue;
         }
 
@@ -161,50 +171,41 @@ export async function POST(request: Request) {
             name: topic.name,
             description: topic.description,
           })
-          .select("id")
+          .select("id, name, description")
           .single();
-
-        if (created) topicIdByName.set(topic.name, created.id);
+        if (created) topics.push(created);
       }
-    } catch {
-      // Ignore - topics are a nice-to-have for this MVP, chunks remain
-      // fully searchable via full-text search regardless of topic_id.
+    } catch (err) {
+      console.error("[upload] topic inference failed (continuing without topics)", err);
     }
 
-    const chunkRows = chunks.map((content, index) => ({
-      material_id: material.id,
-      course_id: courseId,
-      user_id: user.id,
-      chunk_index: index,
-      content,
-      topic_id: null as string | null,
-    }));
-
-    const { error: chunksError } = await supabase.from("material_chunks").insert(chunkRows);
-    if (chunksError) {
-      throw new Error(`Failed to save content chunks: ${chunksError.message}`);
-    }
+    const { error: chunksError } = await supabase.from("material_chunks").insert(
+      chunks.map((content, index) => ({
+        material_id: material.id,
+        course_id: courseId,
+        user_id: user.id,
+        chunk_index: index,
+        content,
+        topic_id: bestTopicFor(content, topics),
+      })),
+    );
+    if (chunksError) throw new Error(`Failed to save content: ${chunksError.message}`);
 
     const { data: readyMaterial } = await supabase
       .from("materials")
-      .update({
-        status: "ready",
-        raw_text: extractedText,
-        storage_path: storagePath,
-        error_message: null,
-      })
+      .update({ status: "ready", raw_text: extractedText, error_message: null })
       .eq("id", material.id)
       .select()
       .single();
 
     return NextResponse.json({ material: readyMaterial ?? material }, { status: 201 });
   } catch (err) {
+    console.error("[upload] processing failed", err);
     const message = err instanceof Error ? err.message : "Processing failed";
     await supabase
       .from("materials")
       .update({ status: "error", error_message: message })
       .eq("id", material.id);
-
     return NextResponse.json({ error: message, materialId: material.id }, { status: 500 });
   }
 }

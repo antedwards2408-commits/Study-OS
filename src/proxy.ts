@@ -34,6 +34,11 @@ export async function proxy(request: NextRequest) {
   const isPublic = PUBLIC_PATHS.includes(request.nextUrl.pathname);
 
   if (!user && !isPublic) {
+    // fetch() follows redirects silently, so an API call would get the
+    // sign-in HTML with a 200 - return a real 401 for API routes instead.
+    if (request.nextUrl.pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "You're signed out - sign in again and retry." }, { status: 401 });
+    }
     const url = request.nextUrl.clone();
     url.pathname = "/sign-in";
     return NextResponse.redirect(url);

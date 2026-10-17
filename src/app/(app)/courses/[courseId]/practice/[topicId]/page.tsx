@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { FileQuestion } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { getTopicChunks } from "@/lib/ai/topic-chunks";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LinkButton } from "@/components/ui/button";
 import { PracticeRunner } from "@/components/practice/practice-runner";
@@ -27,17 +28,20 @@ export default async function PracticeTopicPage(
     .eq("topic_id", topicId)
     .maybeSingle();
 
-  const { data: chunkRows } = await supabase.rpc("chunks_for_topic", {
-    p_topic_id: topicId,
-    p_limit: 1,
+  const chunks = await getTopicChunks(supabase, {
+    courseId,
+    topicId,
+    topicName: topic.name,
+    topicDescription: topic.description,
+    limit: 1,
   });
 
-  if (!chunkRows || chunkRows.length === 0) {
+  if (chunks.length === 0) {
     return (
       <EmptyState
         icon={<FileQuestion className="h-8 w-8" />}
         title="Not enough material for this topic yet"
-        description={`"${topic.name}" doesn't have any tagged material chunks yet. Upload more material for this course, or check back once processing finishes.`}
+        description={`We couldn't find material covering "${topic.name}" in this course. Upload notes or a PDF that covers it, then try again.`}
         action={
           <LinkButton href={`/courses/${courseId}/materials`}>Go to materials</LinkButton>
         }

@@ -2,6 +2,10 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { askTutor, type TutorMessage } from "@/lib/ai/generate";
+import { AIError } from "@/lib/ai/groq";
+import { toOrSearchQuery } from "@/lib/ai/search-query";
+
+const MAX_HISTORY = 12;
 
 /**
  * Where a chat turn is grounded: a single material (full-text search scoped
@@ -71,23 +75,38 @@ export async function sendChatMessage(
       : historyQuery.is("material_id", null);
 
   const { data: historyRows } = await historyQuery;
-  const history: TutorMessage[] = (historyRows ?? []).map((row) => ({
+  // Only recent turns: resending an ever-growing transcript blows through
+  // the free AI tier's per-minute token limit on long conversations.
+  const history: TutorMessage[] = (historyRows ?? []).slice(-MAX_HISTORY).map((row) => ({
     role: row.role,
     content: row.content,
   }));
 
+  const searchQuery = toOrSearchQuery(trimmed);
   let retrievedChunks: string[] = [];
   if (scope.type === "material") {
     const { data: chunks } = await supabase.rpc("search_material_chunks", {
       p_material_id: scope.materialId,
-      p_query: trimmed,
+      p_query: searchQuery,
       p_limit: 6,
     });
     retrievedChunks = (chunks ?? []).map((c) => c.content);
+
+    // Asking about "this material" should still ground in it even when the
+    // wording shares no terms with the text (e.g. "summarize this").
+    if (retrievedChunks.length === 0) {
+      const { data: leading } = await supabase
+        .from("material_chunks")
+        .select("content")
+        .eq("material_id", scope.materialId)
+        .order("chunk_index", { ascending: true })
+        .limit(4);
+      retrievedChunks = (leading ?? []).map((c) => c.content);
+    }
   } else {
     const { data: chunks } = await supabase.rpc("search_course_chunks", {
       p_course_id: scope.courseId,
-      p_query: trimmed,
+      p_query: searchQuery,
       p_limit: 6,
     });
     retrievedChunks = (chunks ?? []).map((c) => c.content);
@@ -103,11 +122,12 @@ export async function sendChatMessage(
       question: trimmed,
     });
   } catch (err) {
+    console.error("[chat] askTutor failed", err);
     return {
       error:
-        err instanceof Error
-          ? `The AI tutor couldn't answer that: ${err.message}`
-          : "The AI tutor couldn't answer that.",
+        err instanceof AIError
+          ? err.message
+          : "The AI tutor couldn't answer that - please try again.",
     };
   }
 
